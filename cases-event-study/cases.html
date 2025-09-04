@@ -1,0 +1,776 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8"/>
+  <title>CS2 Cases — Prices</title>
+  <meta name="viewport" content="width=device-width,initial-scale=1"/>
+  <link rel="stylesheet" href="https://unpkg.com/modern-css-reset/dist/reset.min.css">
+  <script src="https://cdn.plot.ly/plotly-2.32.0.min.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/papaparse@5.4.1/papaparse.min.js"></script>
+  <style>
+    :root{
+      --text:#ffffff; --muted:#fffcaf; --panel:#0b1222; --border:#1f2937;
+      --bg:#0f172a; --bg-active:#0e1f1a; --bg-rare:#171a1f; --bg-discontinued:#241517;
+      --accent:#60a5fa;
+
+      /* Line colors (status) */
+      --line-active:#38bdf8;
+      --line-rare:#a78bfa;
+      --line-discontinued:#f59e0b;
+      --line-other:#94a3b8;
+
+      /* Heatmap border color */
+      --border-contrast:#ff0000;
+    }
+    body{ color:var(--text); background:var(--bg); font:14px/1.5 ui-sans-serif, system-ui, -apple-system, Segoe UI, Roboto, Arial; }
+    body.status-active{ background: var(--bg-active); }
+    body.status-rare{ background: var(--bg-rare); }
+    body.status-discontinued{ background: var(--bg-discontinued); }
+
+    header{ position:sticky; top:0; z-index:10; backdrop-filter: blur(6px);
+      background: rgba(11,16,32,0.7); border-bottom:1px solid var(--border); }
+    .wrap{ max-width:1100px; margin:0 auto; padding:16px; }
+    h1{ font-size:20px; margin:0 0 8px; }
+    .muted{ color:var(--muted); }
+
+    .controls{ display:grid; grid-template-columns: 1fr; gap:12px; margin-top:10px; }
+    @media(min-width: 900px){ .controls{ grid-template-columns: 2fr 1fr 1fr; } }
+    .control{ background:var(--panel); border:1px solid var(--border); border-radius:12px; padding:10px; }
+    .control label{ display:block; font-size:12px; color:var(--muted); margin-bottom:6px; }
+    select, input[type="range"]{
+      width:100%; padding:8px 10px; border-radius:8px; border:1px solid var(--border);
+      background:#0c1426; color:var(--text);
+    }
+    .range-row{ display:flex; gap:10px; align-items:center; }
+    .range-row output{ min-width:56px; text-align:right; color:var(--muted); }
+
+    main{ max-width:1100px; margin:18px auto; padding:0 16px; display:grid; gap:16px; }
+    .card{ background:var(--panel); border:1px solid var(--border); border-radius:16px; padding:16px; }
+    .row{ display:grid; grid-template-columns: 1fr; gap:16px; }
+    @media(min-width: 900px){ .row{ grid-template-columns: 1fr 2fr; } }
+    .meta{ display:grid; gap:10px; }
+    .field .label{ font-size:12px; color:var(--muted); }
+    .field .value{ font-size:14px; }
+    .status-chip{
+      display:inline-block; padding:4px 10px; border-radius:999px; border:1px solid var(--border);
+      background:#0c1426; font-size:12px;
+    }
+    .error{ color:#fca5a5; margin-top:8px; }
+  </style>
+</head>
+<body>
+  <header>
+    <div class="wrap">
+      <h1>CS2 Cases — Price History</h1>
+      <div class="muted">Pick a case to view its daily price series.</div>
+      <div class="controls">
+        <div class="control">
+          <label for="caseSelect">Case</label>
+          <select id="caseSelect"></select>
+        </div>
+        <div class="control">
+          <label for="scaleSelect">Y-axis Scale</label>
+          <select id="scaleSelect">
+            <option value="linear" selected>Linear</option>
+            <option value="log">Log</option>
+          </select>
+        </div>
+        <div class="control">
+          <label for="smoothingSelect">Smoothing</label>
+          <select id="smoothingSelect">
+            <option value="0" selected>None</option>
+            <option value="0.3">Light</option>
+            <option value="0.6">More</option>
+          </select>
+        </div>
+      </div>
+    </div>
+  </header>
+
+  <main>
+    <section class="card">
+      <div class="row">
+        <div class="meta">
+          <div class="field">
+            <div class="label">Status</div>
+            <div class="value"><span id="statusChip" class="status-chip">—</span></div>
+          </div>
+          <div class="field">
+            <div class="label">Release date</div>
+            <div class="value" id="releaseVal">—</div>
+          </div>
+          <div class="field">
+            <div class="label">Inactive date</div>
+            <div class="value" id="inactiveVal">—</div>
+          </div>
+          <div id="loadError" class="error" style="display:none"></div>
+        </div>
+        <div id="chart" style="height:520px;"></div>
+      </div>
+    </section>
+
+    <section class="card">
+      <h2 style="margin:0 0 10px;">Monthly Returns</h2>
+      <div id="heatmap" style="height:520px;"></div>
+      <div class="muted" style="font-size:12px;margin-top:6px;">
+        Returns are month-over-month changes using the last trading day of each month. Blank cells mean not enough data.
+      </div>
+    </section>
+
+    <section class="card">
+      <h2 style="margin:0 0 10px;">Monthly Returns — Distribution</h2>
+      <div class="control" style="margin-bottom:10px;">
+        <label for="binSlider">Bin width</label>
+        <div class="range-row">
+          <input id="binSlider" type="range" min="0.005" max="0.50" step="0.005" value="0.05"/>
+          <output id="binLabel">5%</output>
+        </div>
+      </div>
+      <div id="hist" style="height:420px;"></div>
+      <div class="muted" style="font-size:12px;margin-top:6px;">
+        Adjust the bin width to see how the distribution changes. Values are monthly % returns.
+      </div>
+    </section>
+
+    <section class="card">
+      <h2 style="margin:0 0 10px;">Yearly Returns</h2>
+      <div id="yearly" style="height:520px;"></div>
+      <div class="muted" style="font-size:12px;margin-top:6px;">
+        Year-over-year change using the last trading day of each calendar year.
+      </div>
+    </section>
+
+    <!-- NEW: Normal Q–Q Plot -->
+    <section class="card">
+      <h2 style="margin:0 0 10px;">Normal Q–Q Plot (Monthly Returns)</h2>
+      <div id="qq" style="height:520px;"></div>
+      <div class="muted" style="font-size:12px;margin-top:6px;">
+        Empirical monthly returns (z-scores) vs theoretical normal quantiles. Perfect normality would lie on the diagonal.
+      </div>
+    </section>
+  </main>
+
+  <script>
+    // Paths (relative to this HTML file)
+    const CASES_META_CSV = "data/case%20data/cases.csv";   // name,release_date,inactive_date,status
+    const ITEMS_DIR = "data/items/";                       // case CSVs (item,date,price,volume)
+    const ITEMS_MANIFEST_JSON = "data/items_manifest.json";// optional [{item, path}]
+
+    // ---------- Status helpers ----------
+    function statusClass(status){
+      const s = (status || "").toLowerCase();
+      if (s.includes("active")) return "status-active";
+      if (s.includes("rare")) return "status-rare";
+      if (s.includes("discontinued")) return "status-discontinued";
+      return "";
+    }
+    function statusLineColor(status){
+      const s = (status || "").toLowerCase();
+      if (s.includes("active")) return getCSS("--line-active");
+      if (s.includes("rare")) return getCSS("--line-rare");
+      if (s.includes("discontinued")) return getCSS("--line-discontinued");
+      return getCSS("--line-other");
+    }
+    function getCSS(varName){ return getComputedStyle(document.documentElement).getPropertyValue(varName).trim(); }
+    function setBackgroundByStatus(status){
+      document.body.classList.remove("status-active","status-rare","status-discontinued");
+      const cls = statusClass(status);
+      if (cls) document.body.classList.add(cls);
+      $statusChip.textContent = status || "—";
+    }
+
+    // ---------- Filename guessing ----------
+    function expandCSGOVariants(name){
+      const n = String(name);
+      const variants = new Set([n]);
+      const repls = [
+        [/CS:GO/g, "CSGO"], [/CS:GO/g, "CS_GO"], [/CS:GO/g, "CS GO"],
+        [/CSGO/g, "CS:GO"], [/CSGO/g, "CS_GO"], [/CSGO/g, "CS GO"],
+        [/CS_GO/g, "CSGO"], [/CS_GO/g, "CS:GO"], [/CS_GO/g, "CS GO"],
+        [/CS GO/g, "CSGO"], [/CS GO/g, "CS:GO"], [/CS GO/g, "CS_GO"],
+      ];
+      const queue = [n], seen = new Set(queue);
+      while (queue.length){
+        const cur = queue.shift();
+        for (const [rx, rep] of repls){
+          const next = cur.replace(rx, rep);
+          if (!seen.has(next)){ seen.add(next); queue.push(next); variants.add(next); }
+        }
+      }
+      return [...variants];
+    }
+    function safeStem(name){
+      return String(name).replace(/[\/\\:*?"<>|]/g, "_").replace(/\s+/g, "_").replace(/_+/g, "_").trim();
+    }
+    function candidateItemPaths(name){
+      const variants = new Set();
+      for (const base of expandCSGOVariants(name)){
+        variants.add(base);
+        variants.add(base.replace(/\s+/g, "_"));
+        variants.add(base.replace(/\s+/g, " "));
+        variants.add(base.replace(/_/g, " "));
+        variants.add(safeStem(base));
+      }
+      const toUrl = (p) => p.split("/").map(encodeURIComponent).join("/").replace(/%3A/g, ":");
+      return [...variants].map(v => toUrl(`${ITEMS_DIR}${v}.csv`));
+    }
+
+    // ---------- CSV helpers ----------
+    function parseCSV(url){
+      return new Promise((resolve, reject) => {
+        Papa.parse(url, { download:true, header:true, skipEmptyLines:true,
+          complete: (res) => resolve(res.data),
+          error: reject
+        });
+      });
+    }
+    async function tryLoad(urls){
+      let lastErr = null;
+      for (const u of urls){
+        try{
+          const rows = await parseCSV(u);
+          if (rows && rows.length) return { rows, path:u };
+        }catch(e){ lastErr = e; }
+      }
+      throw lastErr || new Error("All paths failed");
+    }
+
+    // ---------- State ----------
+    let CASES = [];      // [{name, release_date, inactive_date, status}]
+    let MANIFEST = null; // { name: path }
+    const $select = document.getElementById("caseSelect");
+    const $scale = document.getElementById("scaleSelect");
+    const $smooth = document.getElementById("smoothingSelect");
+    const $statusChip = document.getElementById("statusChip");
+    const $releaseVal = document.getElementById("releaseVal");
+    const $inactiveVal = document.getElementById("inactiveVal");
+    const $loadError = document.getElementById("loadError");
+
+    // Histogram controls
+    const $bin = document.getElementById("binSlider");
+    const $binLabel = document.getElementById("binLabel");
+
+    // Keep last returns for slider updates
+    let LAST_RETURNS = [];
+
+    function fmtDate(d){ return d || "—"; }
+    function populateDropdown(){
+      $select.innerHTML = CASES
+        .map((c,i) => `<option value="${c.name.replaceAll('"','&quot;')}" ${i===0?"selected":""}>${c.name}</option>`)
+        .join("");
+    }
+
+    // ---------- Common axis with white text ----------
+    function axisWhite(label){
+      return {
+        title: label || "",
+        titlefont: { color: "#ffffff" },
+        tickfont:  { color: "#ffffff" },
+        gridcolor: "#334155",
+        zerolinecolor: "#64748b"
+      };
+    }
+
+    // ---------- Price chart (segmented by status) ----------
+    function splitSeriesByStatus(rows, meta){
+      const rel = meta.release_date ? new Date(meta.release_date + "T00:00:00Z") : null;
+      const ina = meta.inactive_date ? new Date(meta.inactive_date + "T00:00:00Z") : null;
+      const toDate = (d) => new Date(d + "T00:00:00Z");
+
+      const activeRows = rows.filter(r => {
+        const t = toDate(r.date);
+        if (rel && t < rel) return false;
+        if (ina) return t <= ina;
+        return true;
+      });
+
+      let postRows = [];
+      if (ina){
+        postRows = rows.filter(r => {
+          const t = toDate(r.date);
+          return t >= ina; // include boundary point for continuity
+        });
+      }
+      return { activeRows, postRows };
+    }
+    function drawChartSegmented(rows, meta){
+      const { activeRows, postRows } = splitSeriesByStatus(rows, meta);
+      const activeColor = getCSS("--line-active");
+      const postColor = statusLineColor(meta.status);
+      const traces = [];
+
+      if (activeRows.length){
+        traces.push({
+          type: "scatter", mode: "lines",
+          x: activeRows.map(r => r.date),
+          y: activeRows.map(r => Number(r.price)),
+          line: { width: 2, shape: "spline", smoothing: Number($smooth.value) || 0, color: activeColor },
+          name: "Active",
+        });
+      }
+      if (postRows.length && meta.inactive_date){
+        traces.push({
+          type: "scatter", mode: "lines",
+          x: postRows.map(r => r.date),
+          y: postRows.map(r => Number(r.price)),
+          line: { width: 2, shape: "spline", smoothing: Number($smooth.value) || 0, color: postColor },
+          name: meta.status || "Inactive",
+        });
+      }
+
+      const layout = {
+        title: { text: meta.name, font: { size: 16, color: "#ffffff" }, x: 0, xanchor: "left" },
+        paper_bgcolor: "rgba(0,0,0,0)", plot_bgcolor: "rgba(0,0,0,0)",
+        xaxis: axisWhite("Date"),
+        yaxis: Object.assign(axisWhite("Price"), { type: $scale.value }),
+        margin: { l: 60, r: 20, t: 40, b: 40 },
+        showlegend: true,
+        legend: { orientation: "h", x: 0, y: 1.1, font:{ color:"#ffffff" } },
+        font: { color: "#ffffff" }
+      };
+      Plotly.newPlot("chart", traces, layout, { responsive: true, displayModeBar: true });
+    }
+
+    // ---------- Monthly returns heatmap ----------
+    const MONTH_LABELS = ["Jan","Feb","Mar","Apr","May","Jun","Jul","Aug","Sep","Oct","Nov","Dec"];
+
+    // Color only: symmetric log-stretch + percentile clipping
+    const HEATMAP_COLORSCALE = [
+      [0.00,'#2a0a4a'], [0.25,'#7c3aed'], [0.50,'#e5e7eb'],
+      [0.75,'#14b8a6'], [1.00,'#0f766e']
+    ];
+    const HEATMAP_CLIP = 0.90; // 90th percentile clipping on |returns|
+
+    function quantile(sortedArray, q){
+      if (!sortedArray.length) return 0;
+      const pos = (sortedArray.length - 1) * q;
+      const i = Math.floor(pos), f = pos - i;
+      return sortedArray[i+1] !== undefined ? sortedArray[i] + f*(sortedArray[i+1]-sortedArray[i]) : sortedArray[i];
+    }
+    function logColor(v, zmax){
+      if (v == null || !isFinite(v)) return null;
+      const a = Math.min(Math.abs(v), zmax);
+      const t = Math.log1p(a) / Math.log1p(zmax); // 0..1
+      return Math.sign(v) * t;                     // -1..1
+    }
+    function buildLogTicks(zmax){
+      const stops = [0.01,0.02,0.05,0.1,0.2,0.5,1,2,3].filter(v => v <= zmax + 1e-9);
+      const seq = [...stops.map(v=>-v).reverse(), 0, ...stops];
+      const tickvals = seq.map(v => logColor(v, zmax));
+      const ticktext = seq.map(v => (v*100).toFixed(Math.abs(v)>=0.1?0:1) + "%");
+      return { tickvals, ticktext };
+    }
+
+    function computeMonthEnds(rows){
+      const byMonth = new Map(); // 'YYYY-MM' -> {date, price}
+      for (const r of rows){
+        const key = String(r.date).slice(0,7);
+        const p = Number(r.price);
+        if (!Number.isFinite(p)) continue;
+        if (!byMonth.has(key) || r.date > byMonth.get(key).date){
+          byMonth.set(key, { date: r.date, price: p });
+        }
+      }
+      return [...byMonth.entries()].sort((a,b) => a[0].localeCompare(b[0]));
+    }
+
+    function computeMonthlyReturns(rows){
+      const monthEnds = computeMonthEnds(rows);
+      const months = monthEnds.map(([key, v]) => ({ key, price: v.price, year: key.slice(0,4), m: Number(key.slice(5,7))-1 }));
+      const rets = months.map((mm, i) => {
+        if (i === 0) return { ...mm, ret: null };
+        const prev = months[i-1];
+        if (!prev || !Number.isFinite(prev.price) || !Number.isFinite(mm.price) || prev.price === 0) {
+          return { ...mm, ret: null };
+        }
+        return { ...mm, ret: (mm.price / prev.price) - 1 };
+      });
+
+      const yearsAsc = [...new Set(rets.map(r => r.year))];
+      const years = yearsAsc.slice().sort((a,b) => Number(b) - Number(a)); // latest on top
+      const z = years.map(() => Array(12).fill(null));
+      const text = years.map(() => Array(12).fill(""));
+      for (const r of rets){
+        const yi = years.indexOf(r.year);
+        if (yi === -1) continue;
+        z[yi][r.m] = r.ret;
+        text[yi][r.m] = (r.ret==null? "" : (r.ret*100).toFixed(1) + "%");
+      }
+      return { years, z, text };
+    }
+
+    // For histogram: flat array of monthly returns (decimals)
+    function computeMonthlyReturnsArray(rows){
+      const { z } = computeMonthlyReturns(rows);
+      const flat = [];
+      for (const row of z){
+        for (const v of row){
+          if (v !== null && isFinite(v)) flat.push(v);
+        }
+      }
+      return flat;
+    }
+
+    // ---------- Yearly returns ----------
+    function computeYearEnds(rows){
+      const byYear = new Map(); // 'YYYY' -> {date, price}
+      for (const r of rows){
+        const d = String(r.date);
+        const y = d.slice(0,4);
+        const p = Number(r.price);
+        if (!Number.isFinite(p)) continue;
+        if (!byYear.has(y) || d > byYear.get(y).date){
+          byYear.set(y, { date: d, price: p });
+        }
+      }
+      return [...byYear.entries()].sort((a,b) => a[0].localeCompare(b[0])); // asc by year
+    }
+
+    function computeYearlyReturns(rows){
+      const ends = computeYearEnds(rows); // [['2015',{...}], ...]
+      const out = [];
+      for (let i=1; i<ends.length; i++){
+        const [y, cur] = ends[i];
+        const [, prev] = ends[i-1];
+        if (prev.price && cur.price){
+          out.push({ year: y, ret: (cur.price/prev.price)-1 });
+        }
+      }
+      // latest first for display
+      out.sort((a,b) => Number(b.year) - Number(a.year));
+      return out;
+    }
+
+    function drawYearly(rows, title){
+      const yr = computeYearlyReturns(rows); // [{year,ret}]
+      const years = yr.map(r => r.year);
+      const vals  = yr.map(r => r.ret);
+      const labels= vals.map(v => (v>=0? "+" : "") + (v*100).toFixed(Math.abs(v)>=10?0:1) + "%");
+
+      const posColor = "#60a5fa"; // accent (blue)
+      const negColor = "#f59e0b"; // amber
+      const colors = vals.map(v => (v>=0 ? posColor : negColor));
+
+      const maxAbs = Math.max(0.05, ...vals.map(v => Math.abs(v)));
+      const pad = Math.max(0.05, maxAbs*0.1);
+      const xMax = maxAbs + pad;
+
+      const bar = {
+        type: "bar",
+        orientation: "h",
+        y: years,
+        x: vals,
+        marker: { color: colors, line: { color: "#1f2937", width: 1 } },
+        text: labels,
+        textposition: "outside",
+        hovertemplate: "%{y}: %{x:.1%}<extra></extra>",
+      };
+
+      const layout = {
+        title: { text: `${title} — Yearly Returns`, x: 0, xanchor: "left", font:{ color:"#ffffff" } },
+        paper_bgcolor: "rgba(0,0,0,0)", plot_bgcolor: "rgba(0,0,0,0)",
+        xaxis: Object.assign(axisWhite("Year-over-year return"), { tickformat: "+.0%", range: [-xMax, xMax] }),
+        yaxis: Object.assign(axisWhite(""), { autorange: "reversed" }),
+        margin: { l: 70, r: 30, t: 40, b: 50 },
+        shapes: [{
+          type: "line", x0: 0, x1: 0, y0: 0, y1: 1, yref: "paper",
+          line: { color: "#ffffff", width: 1, dash: "dot" }
+        }],
+        font: { color: "#ffffff" }
+      };
+
+      Plotly.newPlot("yearly", [bar], layout, { responsive: true, displayModeBar: true });
+    }
+
+    // ---------- Heatmap helpers for borders ----------
+    function buildStatusGrid(rows, years, meta){
+      const monthEnds = computeMonthEnds(rows);
+      const inactiveKey = meta.inactive_date ? meta.inactive_date.slice(0,7) : null;
+      const yearIndex = Object.fromEntries(years.map((y,i)=>[y,i]));
+      const grid = years.map(()=>Array(12).fill(null));
+      for (const [key] of monthEnds){
+        const y = key.slice(0,4), m = Number(key.slice(5,7))-1;
+        const yi = yearIndex[y];
+        if (yi == null) continue;
+        const isActive = inactiveKey ? (key <= inactiveKey) : true;
+        grid[yi][m] = isActive;
+      }
+      return grid;
+    }
+    function buildBoundaryShapes(activeGrid){
+      const shapes = [];
+      const borderColor = getCSS("--border-contrast");
+      const rows = activeGrid.length, cols = 12;
+      for (let y=0; y<rows; y++){
+        for (let x=0; x<cols-1; x++){
+          const a = activeGrid[y][x], b = activeGrid[y][x+1];
+          if (a == null || b == null || a === b) continue;
+          shapes.push({ type:"line", xref:"x", yref:"y",
+            x0:x+0.5, x1:x+0.5, y0:y-0.5, y1:y+0.5, line:{ color:borderColor, width:2 }});
+        }
+      }
+      for (let y=0; y<rows-1; y++){
+        for (let x=0; x<cols; x++){
+          const a = activeGrid[y][x], b = activeGrid[y+1][x];
+          if (a == null || b == null || a === b) continue;
+          shapes.push({ type:"line", xref:"x", yref:"y",
+            x0:x-0.5, x1:x+0.5, y0:y+0.5, y1:y+0.5, line:{ color:borderColor, width:2 }});
+        }
+      }
+      return shapes;
+    }
+
+    function drawHeatmap(rows, title, meta){
+      const { years, z, text } = computeMonthlyReturns(rows);
+      const statusGrid = buildStatusGrid(rows, years, meta);
+      const shapes = buildBoundaryShapes(statusGrid);
+
+      const xvals = [...Array(12)].map((_,i)=>i);
+      const yvals = [...Array(years.length)].map((_,i)=>i);
+
+      const absVals = z.flat().filter(v => v !== null && isFinite(v)).map(Math.abs).sort((a,b)=>a-b);
+      const HEATMAP_CLIP = 0.90;
+      let zmax = quantile(absVals, HEATMAP_CLIP);
+      zmax = Math.max(zmax, 0.05);
+      const { tickvals, ticktext } = buildLogTicks(zmax);
+      const zColor = z.map(row => row.map(v => v==null ? null : logColor(v, zmax)));
+      const customdata = yvals.map(yi => xvals.map(xi => [years[yi], MONTH_LABELS[xi]]));
+
+      const data = [{
+        type: "heatmap",
+        x: xvals, y: yvals, z: zColor,
+        text, customdata,
+        texttemplate: "%{text}",
+        textfont: { color: "#ffffff", size: 13 },
+        hovertemplate: "Year %{customdata[0]} · %{customdata[1]}<br>%{text}<extra></extra>",
+        colorscale: HEATMAP_COLORSCALE,
+        zmid: 0, zmin: -1, zmax: 1,
+        showscale: true,
+        colorbar: { tickmode:"array", tickvals, ticktext, outlinewidth: 0, tickfont:{ color:"#ffffff" } }
+      }];
+
+      const layout = {
+        title: { text: `${title} — Monthly Returns`, font: { size: 16, color:"#ffffff" }, x: 0, xanchor: "left" },
+        paper_bgcolor: "rgba(0,0,0,0)", plot_bgcolor: "rgba(0,0,0,0)",
+        xaxis: Object.assign(axisWhite(""), { tickmode:"array", tickvals:xvals, ticktext:MONTH_LABELS, side:"top", range:[-0.5, 11.5] }),
+        yaxis: Object.assign(axisWhite(""), { tickmode:"array", tickvals:yvals, ticktext:years, autorange:"reversed", range:[-0.5, years.length-0.5] }),
+        margin: { l: 60, r: 20, t: 50, b: 30 },
+        shapes,
+        font: { color: "#ffffff" }
+      };
+
+      Plotly.newPlot("heatmap", data, layout, { responsive: true, displayModeBar: true });
+    }
+
+    // ---------- Histogram ----------
+    function pct(n){ return (n*100).toFixed(n >= 0.1 ? 0 : 1) + "%"; }
+    function drawHistogram(returns, binWidth){
+      const markerColor = getCSS("--accent");
+      const trace = {
+        type: "histogram",
+        x: returns,
+        xbins: { size: binWidth },
+        marker: { color: markerColor, line: { color: "#1f2937", width: 1 } },
+        hovertemplate: "%{x:.1%}<br>Count: %{y}<extra></extra>"
+      };
+      const layout = {
+        title: { text: "Distribution of Monthly Returns", x: 0, xanchor: "left", font:{ color:"#ffffff" } },
+        paper_bgcolor: "rgba(0,0,0,0)", plot_bgcolor: "rgba(0,0,0,0)",
+        xaxis: Object.assign(axisWhite("Monthly return"), { tickformat: "+.0%" }),
+        yaxis: axisWhite("Count"),
+        margin: { l: 60, r: 20, t: 40, b: 50 },
+        shapes: [{ type:"line", x0:0, x1:0, y0:0, y1:1, yref:"paper",
+                   line:{ color:"#ffffff", width:1, dash:"dot" }}],
+        font: { color:"#ffffff" }
+      };
+      Plotly.newPlot("hist", [trace], layout, { responsive: true, displayModeBar: true });
+    }
+    function updateBinLabel(){ $binLabel.textContent = pct(Number($bin.value)); }
+
+    // ---------- Normal Q–Q (monthly returns) ----------
+    // Acklam's inverse-normal CDF approximation
+    function normInv(p){
+      if (p <= 0 || p >= 1) return NaN;
+      const a1=-3.969683028665376e+01, a2= 2.209460984245205e+02, a3=-2.759285104469687e+02,
+            a4= 1.383577518672690e+02, a5=-3.066479806614716e+01, a6= 2.506628277459239e+00;
+      const b1=-5.447609879822406e+01, b2= 1.615858368580409e+02, b3=-1.556989798598866e+02,
+            b4= 6.680131188771972e+01, b5=-1.328068155288572e+01;
+      const c1=-7.784894002430293e-03, c2=-3.223964580411365e-01, c3=-2.400758277161838e+00,
+            c4=-2.549732539343734e+00, c5= 4.374664141464968e+00, c6= 2.938163982698783e+00;
+      const d1= 7.784695709041462e-03, d2= 3.224671290700398e-01, d3= 2.445134137142996e+00,
+            d4= 3.754408661907416e+00;
+      const plow = 0.02425, phigh = 1 - plow;
+      let q, r;
+      if (p < plow){
+        q = Math.sqrt(-2 * Math.log(p));
+        return (((((c1*q+c2)*q+c3)*q+c4)*q+c5)*q+c6) /
+               ((((d1*q+d2)*q+d3)*q+d4)*q+1);
+      }else if (phigh < p){
+        q = Math.sqrt(-2 * Math.log(1-p));
+        return -(((((c1*q+c2)*q+c3)*q+c4)*q+c5)*q+c6) /
+                 ((((d1*q+d2)*q+d3)*q+d4)*q+1);
+      }else{
+        q = p - 0.5;
+        r = q*q;
+        return (((((a1*r+a2)*r+a3)*r+a4)*r+a5)*r+a6)*q /
+               (((((b1*r+b2)*r+b3)*r+b4)*r+b5)*r+1);
+      }
+    }
+
+    function drawQQ(returns){
+      const x = returns.filter(v => Number.isFinite(v)).slice().sort((a,b)=>a-b);
+      const n = x.length;
+      if (!n) { Plotly.purge("qq"); return; }
+
+      // sample mean/std (unbiased std)
+      const mean = x.reduce((s,v)=>s+v,0)/n;
+      const sd = Math.sqrt(x.reduce((s,v)=>s+(v-mean)*(v-mean),0)/(n-1)) || 1;
+
+      // empirical z and theoretical z
+      const empZ = x.map(v => (v-mean)/sd);
+      const theoZ = x.map((_,i) => normInv((i+0.5)/n));
+
+      const pts = {
+        type: "scatter",
+        mode: "markers",
+        x: theoZ,
+        y: empZ,
+        marker: { size: 6, opacity: 0.85, color: getCSS("--accent") },
+        customdata: x,
+        hovertemplate: "Theoretical z: %{x:.2f}<br>Empirical z: %{y:.2f}<br>Return: %{customdata:.1%}<extra></extra>"
+      };
+
+      const minV = Math.min(...theoZ, ...empZ);
+      const maxV = Math.max(...theoZ, ...empZ);
+      const pad = 0.25;
+      const lo = Math.floor((minV - pad)*2)/2;
+      const hi = Math.ceil((maxV + pad)*2)/2;
+
+      const diag = {
+        type: "line",
+        x0: lo, y0: lo,
+        x1: hi, y1: hi,
+        line: { color: "#ffffff", width: 1, dash: "dot" }
+      };
+
+      const layout = {
+        title: { text: "Normal Q–Q (Monthly Returns, z-scores)", font:{ color:"#ffffff" }, x:0, xanchor:"left" },
+        paper_bgcolor: "rgba(0,0,0,0)", plot_bgcolor: "rgba(0,0,0,0)",
+        xaxis: axisWhite("Theoretical quantiles (z)"),
+        yaxis: axisWhite("Empirical quantiles (z)"),
+        margin: { l: 70, r: 20, t: 40, b: 60 },
+        shapes: [diag],
+        font: { color: "#ffffff" }
+      };
+
+      Plotly.newPlot("qq", [pts], layout, { responsive: true, displayModeBar: true });
+    }
+
+    // ---------- Loading & events ----------
+    async function loadItemCSVFor(name){
+      if (MANIFEST && MANIFEST[name]){
+        const url = MANIFEST[name];
+        const rows = await parseCSV(url);
+        return { rows, path: url };
+      }
+      return await tryLoad(candidateItemPaths(name));
+    }
+
+    async function onSelectChange(){
+      const name = $select.value;
+      const meta = CASES.find(c => c.name === name) || { name };
+      $releaseVal.textContent = fmtDate(meta.release_date);
+      $inactiveVal.textContent = fmtDate(meta.inactive_date);
+      setBackgroundByStatus(meta.status);
+
+      $loadError.style.display = "none";
+      $loadError.textContent = "";
+
+      try{
+        const { rows } = await loadItemCSVFor(name);
+        const cleaned = rows
+          .map(r => ({ date: String(r.date), price: Number(r.price) }))
+          .filter(r => r.date && Number.isFinite(r.price));
+        if (!cleaned.length) throw new Error("No rows parsed");
+
+        // Price chart
+        drawChartSegmented(cleaned, meta);
+
+        // Heatmap
+        drawHeatmap(cleaned, name, meta);
+
+        // Histogram
+        LAST_RETURNS = computeMonthlyReturnsArray(cleaned);
+        updateBinLabel();
+        drawHistogram(LAST_RETURNS, Number($bin.value));
+
+        // Yearly
+        drawYearly(cleaned, name);
+
+        // Q–Q plot
+        drawQQ(LAST_RETURNS);
+
+      }catch(err){
+        Plotly.purge("chart");
+        Plotly.purge("heatmap");
+        Plotly.purge("hist");
+        Plotly.purge("yearly");
+        Plotly.purge("qq");
+        $loadError.style.display = "block";
+        $loadError.textContent =
+          `Could not load CSV for "${name}".<br>
+           Consider adding an entry to <code>data/items_manifest.json</code> mapping this name to the exact file path.<br>
+           Tried: ${candidateItemPaths(name).join(" &middot; ")}`;
+        console.error(err);
+      }
+    }
+
+    async function boot(){
+      try{
+        // Optional manifest
+        try{
+          const manifestRows = await parseCSV(ITEMS_MANIFEST_JSON);
+          if (Array.isArray(manifestRows)){
+            MANIFEST = {};
+            for (const r of manifestRows){
+              const k = (r.item || r.name || "").toString().trim();
+              const p = (r.path || "").toString().trim();
+              if (k && p) MANIFEST[k] = p;
+            }
+          }
+        }catch(_ignored){}
+
+        // Load case metadata
+        const casesRows = await parseCSV(CASES_META_CSV);
+        CASES = casesRows.map(r => ({
+          name: String(r.name || "").trim(),
+          release_date: String(r.release_date || "").trim(),
+          inactive_date: String(r.inactive_date || "").trim(),
+          status: String(r.status || "").trim(),
+        })).filter(r => r.name);
+
+        CASES.sort((a,b) => (a.release_date||"").localeCompare(b.release_date||""));
+        populateDropdown();
+
+        $select.addEventListener("change", onSelectChange);
+        $scale.addEventListener("change", onSelectChange);
+        $smooth.addEventListener("change", onSelectChange);
+        $bin.addEventListener("input", () => {
+          updateBinLabel();
+          if (LAST_RETURNS.length) drawHistogram(LAST_RETURNS, Number($bin.value));
+        });
+
+        onSelectChange();
+      }catch(err){
+        document.querySelector("main").innerHTML = `
+          <section class="card">
+            <h2>Failed to load metadata</h2>
+            <p class="error">I couldn't fetch <code>${CASES_META_CSV}</code>. Serve this folder (e.g. <code>python -m http.server</code> in <code>cases-event-study/</code>).</p>
+          </section>`;
+        console.error(err);
+      }
+    }
+    boot();
+  </script>
+</body>
+</html>
